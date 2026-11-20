@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自習簽到</title>
+<style>
+  body{font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif;background:#f4f5f7;margin:0;padding:16px;color:#222}
+  .card{background:#fff;border-radius:12px;padding:20px;max-width:520px;margin:0 auto 16px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  h1{font-size:22px;margin:0 0 16px}
+  label{display:block;margin-bottom:12px;font-size:15px}
+  input{font-size:16px;padding:8px;border:1px solid #ccc;border-radius:8px;display:block;width:100%;box-sizing:border-box;margin-top:4px}
+  button{font-size:16px;padding:10px 18px;border:0;border-radius:8px;background:#2563eb;color:#fff;margin:4px 0}
+  button:disabled{opacity:.5}
+  #msg{font-size:17px;text-align:center;line-height:1.6}.ok{font-size:24px;color:#16a34a}
+  .hint{color:#777;font-size:13px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1 id="title">自習簽到</h1>
+  <div id="form">
+    <label>姓名<input id="name" autocomplete="name"></label>
+    <label>學號<input id="sid" inputmode="numeric"></label>
+    <button id="btn">簽到</button>
+  </div>
+  <p id="msg"></p>
+  <p class="hint" id="hint">簽到時會記錄手機位置，僅用於確認是否在自習地點。</p>
+</div>
+<script>
+  // Apps Script 網頁應用程式網址（部署 → 管理部署作業 → 網址）
+  const API = 'https://script.google.com/macros/s/AKfycbwrFow5HGB-kW9xD4z2r7mOQXcV2zkPARuziGvgy4FqFeEF5i6rWeNDwh7agisJMJrfHA/exec';
+
+  const $ = id => document.getElementById(id);
+  const TOKEN = new URLSearchParams(location.search).get('t') || '';
+
+  // ---- 裝置ID：本頁是獨立網站（非 Google 框架），手機會長期保存；另存一份在 cookie 備援 ----
+  function getCookie(k) { const m = document.cookie.match('(?:^|; )' + k + '=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; }
+  function setCookie(k, v) { document.cookie = k + '=' + encodeURIComponent(v) + '; max-age=' + 60 * 60 * 24 * 400 + '; path=/; SameSite=Lax; Secure'; }
+  let DEVICE = '';
+  try { DEVICE = localStorage.getItem('d') || getCookie('d'); } catch (e) { DEVICE = getCookie('d'); }
+  if (!DEVICE) DEVICE = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2)).replace(/[^\w-]/g, '');
+  try { localStorage.setItem('d', DEVICE); } catch (e) {}
+  setCookie('d', DEVICE);
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+  try { $('name').value = localStorage.getItem('n') || ''; $('sid').value = localStorage.getItem('s') || ''; } catch (e) {}
+
+  // ---- 手機特徵（同機偵測用；不含個資）----
+  function fingerprint() {
+    const n = navigator, s = screen;
+    let gl = '', cv = '';
+    try { const c = document.createElement('canvas').getContext('webgl'); const e = c.getExtension('WEBGL_debug_renderer_info');
+      gl = (c.getParameter(c.VENDOR) || '') + '/' + (e ? c.getParameter(e.UNMASKED_RENDERER_WEBGL) : c.getParameter(c.RENDERER)); } catch (e) {}
+    try { const c = document.createElement('canvas'); c.width = 220; c.height = 40; const x = c.getContext('2d');
+      x.textBaseline = 'top'; x.font = '16px Arial'; x.fillStyle = '#f60'; x.fillRect(0, 0, 110, 20);
+      x.fillStyle = '#069'; x.fillText('自習簽到 fp 0123 ✓', 2, 2); cv = c.toDataURL(); } catch (e) {}
+    const os = (n.userAgent.match(/\(([^)]*)\)/) || ['', n.userAgent])[1];
+    const raw = [os, s.width + 'x' + s.height, s.colorDepth, window.devicePixelRatio,
+      Intl.DateTimeFormat().resolvedOptions().timeZone, n.hardwareConcurrency || '', n.maxTouchPoints || '', gl, cv].join('|');
+    let a = 5381, b = 7;
+    for (let i = 0; i < raw.length; i++) { const k = raw.charCodeAt(i); a = ((a << 5) + a + k) | 0; b = (b * 31 + k) | 0; }
+    return (a >>> 0).toString(36) + (b >>> 0).toString(36);
+  }
+
+  function api(body) {
+    return fetch(API, { method: 'POST', body: JSON.stringify(body) })   // text/plain，不觸發 CORS 預檢
+      .then(r => r.json());
+  }
+
+  function getLoc(cb) {
+    let done = false;
+    const finish = v => { if (!done) { done = true; cb(v); } };
+    setTimeout(() => finish(null), 15000);
+    if (!navigator.geolocation) return finish(null);
+    navigator.geolocation.getCurrentPosition(
+      p => finish({ lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy }),
+      () => finish(null),
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
+  }
+
+  if (!TOKEN) {
+    $('form').style.display = 'none';
+    $('msg').textContent = '請用手機掃描張貼在現場的 QR Code。';
+  } else {
+    api({ action: 'info', token: TOKEN }).then(r => {
+      if (!r.ok) return;
+      const names = (r.sites || []).join('、');
+      if (names) { $('title').textContent = names + ' 自習簽到'; $('hint').textContent = '簽到時會記錄手機位置，僅用於確認是否在自習地點（' + names + '）。'; }
+      if (!r.valid) { $('form').style.display = 'none'; $('msg').textContent = '❌ 這個 QR Code 已失效，請掃描今天張貼的 QR Code'; }
+    }).catch(() => {});
+  }
+
+  $('btn').addEventListener('click', () => {
+    const n = $('name').value.trim(), s = $('sid').value.trim();
+    if (!n || !s) { $('msg').textContent = '請填寫姓名與學號'; return; }
+    try { localStorage.setItem('n', n); localStorage.setItem('s', s); } catch (e) {}
+    $('btn').disabled = true; $('msg').textContent = '取得定位中…（請按「允許」）';
+    getLoc(loc => {
+      $('msg').textContent = '送出中…';
+      api({ action: 'checkin', token: TOKEN, name: n, sid: s, device: DEVICE, loc: loc, fp: fingerprint() })
+        .then(r => {
+          if (!r.ok) throw new Error(r.error || '簽到失敗');
+          $('form').style.display = 'none';
+          const box = $('msg'); box.textContent = '';
+          const ok = document.createElement('span'); ok.className = 'ok'; ok.textContent = '✅ 簽到成功';
+          box.append(ok, document.createElement('br'), n + '　' + r.time + (r.site ? '　📍' + r.site : ''));
+          if (r.flag) { const sm = document.createElement('small'); sm.textContent = '（偵測到裝置異常，已通知管理員）'; box.append(document.createElement('br'), sm); }
+        })
+        .catch(err => { $('btn').disabled = false; $('msg').textContent = '❌ ' + (err.message || '網路錯誤，請再試一次'); });
+    });
+  });
+</script>
+</body>
+</html>
